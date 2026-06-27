@@ -18,6 +18,7 @@ import os
 import json
 import logging
 import urllib.request
+import time
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -67,9 +68,9 @@ CATEGORY_LABELS = {
 
 CATEGORY_EMOJI = {
     "world":  "🌐",
-    "geo":    "🗺️",
+    "geo":    "📍",
     "tech":   "💻",
-    "taiwan": "🇹🇼",
+    "taiwan": "📌",
 }
 
 SYSTEM_PROMPT = """你是一個專業的新聞編輯助手，負責彙整當天的重大新聞。
@@ -216,13 +217,18 @@ def run_full_digest() -> dict:
     """跑完四個分類，更新快取，回傳結果"""
     client = get_gemini_client()
     result = {}
-    for key, desc in CATEGORIES.items():
+    keys = list(CATEGORIES.keys())
+    for i, (key, desc) in enumerate(CATEGORIES.items()):
         logger.info(f"彙整分類：{key}")
         try:
             result[key] = fetch_category_news(client, key, desc)
         except Exception as e:
             logger.error(f"{key} 失敗: {e}")
             result[key] = {"items": [], "label": CATEGORY_LABELS[key], "error": str(e)}
+        # 每個分類之間等待 5 秒，避免觸發 Gemini API rate limit
+        if i < len(keys) - 1:
+            logger.info("等待 5 秒後處理下一個分類...")
+            time.sleep(5)
 
     generated_at = tw_now().isoformat()
     _cache["generated_at"] = generated_at
