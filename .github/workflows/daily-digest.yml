@@ -9,13 +9,26 @@ jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: 喚醒服務
-        run: curl https://newssummary-3l9x.onrender.com/
+      - name: 喚醒服務（第一次）
+        run: curl -s https://newssummary-3l9x.onrender.com/ || true
 
-      - name: 等待服務啟動
-        run: sleep 40
+      - name: 等待服務完全啟動
+        run: sleep 60
+
+      - name: 確認服務已就緒
+        run: |
+          for i in 1 2 3; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://newssummary-3l9x.onrender.com/)
+            echo "嘗試 $i：HTTP $STATUS"
+            if [ "$STATUS" = "200" ]; then
+              echo "服務就緒"
+              break
+            fi
+            sleep 15
+          done
 
       - name: 觸發新聞彙整與LINE推播
         run: |
           curl -X POST https://newssummary-3l9x.onrender.com/run-digest \
-            --max-time 300
+            --max-time 600 \
+            -w "\nHTTP狀態碼: %{http_code}\n耗時: %{time_total}秒\n"
