@@ -30,10 +30,10 @@ API_KEY = os.environ.get("GEMINI_API_KEY")
 MODEL_NAME = "gemini-2.5-flash"
 
 CATEGORIES = {
-    "world": "今天全球發生的重大國際新聞（政治、經濟、社會、災難等級事件，非地緣政治、非科技類別）",
-    "geo": "今天的地緣政治新聞（國家間軍事、外交、戰爭、貿易制裁、領土爭議等）",
-    "tech": "今天全球重大科技新聞（AI、半導體、大型科技公司、重要產品發布）",
-    "taiwan": "今天台灣本地的重大新聞（政治、經濟、社會、產業、天氣災害等）",
+    "world": "今天全球發生的重大國際新聞（政治、經濟、社會、災難等級事件，非地緣政治、非科技類別），列出 3-5 則",
+    "geo": "今天的地緣政治新聞（國家間軍事、外交、戰爭、貿易制裁、領土爭議等），列出 3-5 則",
+    "tech": "今天全球重大科技新聞（AI、半導體、大型科技公司、重要產品發布），列出 3-5 則，優先引用 BBC、Reuters、The Verge、TechCrunch、Wired、Bloomberg 等英文主流媒體",
+    "taiwan": "今天台灣本地的重大新聞（政治、經濟、社會、產業、天氣災害、兩岸關係等），列出 8-12 則，涵蓋面向盡量廣泛",
 }
 
 CATEGORY_LABELS = {
@@ -46,24 +46,26 @@ CATEGORY_LABELS = {
 SYSTEM_PROMPT = """你是一個專業的新聞編輯助手，負責彙整當天的重大新聞。
 請使用搜尋工具找出今天真實發生的新聞，不要使用你訓練資料中的舊新聞或捏造內容。
 
-針對每一類新聞，請找出 3-5 則最重要的當日新聞，並以下列 JSON 格式輸出（不要有任何 markdown 標記或前後綴文字，只輸出純 JSON）：
+請以下列 JSON 格式輸出（不要有任何 markdown 標記或前後綴文字，只輸出純 JSON）：
 
 {
   "items": [
     {
-      "title": "新聞標題（簡潔有力，20字以內）",
-      "summary": "三到五句話的摘要，需包含事件背景、關鍵細節、可能影響，繁體中文書寫",
+      "title": "新聞標題（簡潔有力，20字以內，一律使用繁體中文）",
+      "summary": "三到五句話的摘要，需包含事件背景、關鍵細節、可能影響，一律使用繁體中文書寫，若原始來源為英文請翻譯成繁體中文",
       "source": "新聞來源媒體名稱",
-      "time": "事件發生或報導時間，格式 HH:MM，若不確定請填當前時段"
+      "time": "HH:MM"
     }
   ]
 }
 
 注意事項：
 1. 必須是今天的新聞，不要使用過時或捏造的內容
-2. summary 禁止逐字複製原文，必須用自己的話改寫
-3. 如果某類別找不到足夠的當日重大新聞，寧可少給也不要硬湊或捏造
-4. 嚴格輸出合法 JSON，不要加註解或多餘文字
+2. summary 禁止逐字複製原文，必須用自己的話改寫，並全程使用繁體中文
+3. title 若原始來源為英文，請翻譯成繁體中文
+4. time 欄位只能填 HH:MM 格式的時間（如 09:30），若無法從新聞確認確切時間，請填入當前台灣時間（UTC+8）
+5. 如果某類別找不到足夠的當日重大新聞，寧可少給也不要硬湊或捏造
+6. 嚴格輸出合法 JSON，不要加註解或多餘文字
 """
 
 
@@ -76,11 +78,25 @@ def get_client() -> genai.Client:
     return genai.Client(api_key=API_KEY)
 
 
+def normalize_time(time_str: str) -> str:
+    """
+    確保 time 欄位格式正確（HH:MM）。
+    若 Gemini 回傳非時間格式的字串（如「當前時段」），改用當下台灣時間。
+    """
+    import re
+    if re.match(r"^\d{2}:\d{2}$", (time_str or "").strip()):
+        return time_str.strip()
+    # 取得當前台灣時間（UTC+8）
+    from datetime import timezone, timedelta
+    tw_now = datetime.now(timezone(timedelta(hours=8)))
+    return tw_now.strftime("%H:%M")
+
+
 def fetch_category_news(client: genai.Client, category_key: str, category_desc: str) -> dict:
     """呼叫 Gemini API，搜尋並彙整指定類別的當日新聞"""
 
     today_str = datetime.now().strftime("%Y年%m月%d日")
-    user_prompt = f"今天是{today_str}。請搜尋並彙整：{category_desc}"
+    user_prompt = f"今天是{today_str}（台灣時間 UTC+8）。請搜尋並彙整：{category_desc}"
 
     response = client.models.generate_content(
         model=MODEL_NAME,
@@ -105,6 +121,10 @@ def fetch_category_news(client: genai.Client, category_key: str, category_desc: 
     except json.JSONDecodeError as e:
         logger.warning(f"{category_key} JSON 解析失敗: {e}")
         parsed = {"items": [], "error": str(e), "raw": raw_text[:1000]}
+
+    # 修正每則新聞的 time 欄位
+    for item in parsed.get("items", []):
+        item["time"] = normalize_time(item.get("time", ""))
 
     grounding_sources = []
     try:
@@ -138,13 +158,13 @@ def test_digest(category: Optional[str] = None):
     """
     client = get_client()
 
-    targets = {category: CATEGORIES[category]} if category and category in CATEGORIES else CATEGORIES
-
     if category and category not in CATEGORIES:
         raise HTTPException(
             status_code=400,
             detail=f"未知分類 '{category}'，可用分類：{list(CATEGORIES.keys())}",
         )
+
+    targets = {category: CATEGORIES[category]} if category else CATEGORIES
 
     result = {}
     for key, desc in targets.items():
