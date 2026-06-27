@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>每日新聞彙整</title>
+<style>
+  /* ── Token system ───────────────────────────────── */
+  :root {
+    --bg:        #F7F6F3;
+    --surface:   #FFFFFF;
+    --border:    #E8E6E1;
+    --text-primary:   #1A1917;
+    --text-secondary: #6B6860;
+    --text-muted:     #A09E99;
+
+    /* 分類色 */
+    --c-world:  #1D4ED8;  --c-world-bg:  #EFF4FF;
+    --c-geo:    #B45309;  --c-geo-bg:    #FEF3C7;
+    --c-tech:   #6D28D9;  --c-tech-bg:   #F5F1FF;
+    --c-taiwan: #0F766E;  --c-taiwan-bg: #EDFAF8;
+
+    --radius-card: 14px;
+    --shadow-card: 0 1px 3px rgba(0,0,0,.07), 0 4px 12px rgba(0,0,0,.04);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: -apple-system, "PingFang TC", "Noto Sans TC", sans-serif;
+    min-height: 100vh;
+    padding-bottom: 48px;
+  }
+
+  /* ── Header ─────────────────────────────────────── */
+  .header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: rgba(247,246,243,.92);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 20px 14px;
+  }
+  .header-meta {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+  .header-title {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--text-primary);
+    letter-spacing: -.3px;
+  }
+  .header-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 3px;
+  }
+
+  /* ── Main ───────────────────────────────────────── */
+  .main {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 20px 16px 0;
+  }
+
+  /* ── Loading / Error ────────────────────────────── */
+  .state-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 240px;
+    gap: 12px;
+    color: var(--text-muted);
+    font-size: 14px;
+    text-align: center;
+  }
+  .spinner {
+    width: 32px; height: 32px;
+    border: 3px solid var(--border);
+    border-top-color: var(--text-muted);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Category section ───────────────────────────── */
+  .section { margin-bottom: 28px; }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 0 2px;
+  }
+  .cat-icon {
+    width: 30px; height: 30px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px;
+    flex-shrink: 0;
+  }
+  .section-title {
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    color: var(--text-primary);
+  }
+  .section-count {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* ── News card ──────────────────────────────────── */
+  .card {
+    background: var(--surface);
+    border-radius: var(--radius-card);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-card);
+    margin-bottom: 10px;
+    overflow: hidden;
+    border-left-width: 3px;
+    border-left-style: solid;
+  }
+  .card-trigger {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 13px 14px;
+    cursor: pointer;
+    background: none;
+    border: none;
+    width: 100%;
+    text-align: left;
+    font-family: inherit;
+  }
+  .card-body { flex: 1; min-width: 0; }
+  .card-title {
+    font-size: 14.5px;
+    font-weight: 600;
+    line-height: 1.45;
+    color: var(--text-primary);
+  }
+  .card-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 5px;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .card-meta-dot { color: var(--border); }
+  .chevron {
+    width: 16px; height: 16px;
+    flex-shrink: 0;
+    margin-top: 2px;
+    color: var(--text-muted);
+    transition: transform .25s ease;
+  }
+  .card.open .chevron { transform: rotate(180deg); }
+
+  .card-summary {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height .3s ease, padding .3s ease;
+    padding: 0 14px;
+  }
+  .card.open .card-summary {
+    max-height: 400px;
+    padding: 0 14px 14px;
+  }
+  .card-summary p {
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+  }
+
+  /* ── Footer ─────────────────────────────────────── */
+  .footer {
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-muted);
+    padding-top: 8px;
+  }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-meta" id="header-date">載入中…</div>
+  <div class="header-title">今日新聞彙整</div>
+  <div class="header-sub" id="header-sub"></div>
+</header>
+
+<main class="main" id="main">
+  <div class="state-box">
+    <div class="spinner"></div>
+    <div>正在取得今日新聞…</div>
+  </div>
+</main>
+
+<script>
+// ── 設定：將這裡的網址換成你的 Render 服務網址 ──
+const API_BASE = "https://newssummary-3l9x.onrender.com";
+
+const CATEGORIES = [
+  { key: "world",  label: "國際重大", icon: "🌐", accent: "var(--c-world)",  bg: "var(--c-world-bg)"  },
+  { key: "geo",    label: "地緣政治", icon: "🗺️", accent: "var(--c-geo)",    bg: "var(--c-geo-bg)"    },
+  { key: "tech",   label: "科技",     icon: "💻", accent: "var(--c-tech)",   bg: "var(--c-tech-bg)"   },
+  { key: "taiwan", label: "台灣",     icon: "🇹🇼", accent: "var(--c-taiwan)", bg: "var(--c-taiwan-bg)" },
+];
+
+// ── 日期格式 ──────────────────────────────────────
+function formatDate(isoStr) {
+  const d = isoStr ? new Date(isoStr) : new Date();
+  const weekdays = ["週日","週一","週二","週三","週四","週五","週六"];
+  return `${d.getMonth()+1}月${d.getDate()}日 ${weekdays[d.getDay()]}`;
+}
+
+// ── 卡片 toggle ───────────────────────────────────
+function toggleCard(card) {
+  card.classList.toggle("open");
+}
+
+// ── 渲染 ──────────────────────────────────────────
+function renderDigest(data) {
+  const main = document.getElementById("main");
+  const cats = data.categories || {};
+  const generatedAt = data.generated_at;
+
+  document.getElementById("header-date").textContent =
+    formatDate(generatedAt) + " · 晚間彙整";
+  document.getElementById("header-sub").textContent =
+    generatedAt
+      ? `更新於 ${new Date(generatedAt).toLocaleTimeString("zh-TW", { hour:"2-digit", minute:"2-digit" })}`
+      : "";
+
+  let html = "";
+  for (const cat of CATEGORIES) {
+    const data_cat = cats[cat.key] || {};
+    const items = data_cat.items || [];
+    if (!items.length) continue;
+
+    html += `
+      <section class="section">
+        <div class="section-header">
+          <div class="cat-icon" style="background:${cat.bg};color:${cat.accent}">
+            ${cat.icon}
+          </div>
+          <span class="section-title">${cat.label}</span>
+          <span class="section-count">${items.length} 則</span>
+        </div>
+        ${items.map(item => `
+          <div class="card" style="border-left-color:${cat.accent}">
+            <button class="card-trigger" onclick="toggleCard(this.closest('.card'))">
+              <div class="card-body">
+                <div class="card-title">${escHtml(item.title)}</div>
+                <div class="card-meta">
+                  <span>${escHtml(item.time)}</span>
+                  <span class="card-meta-dot">·</span>
+                  <span>${escHtml(item.source)}</span>
+                </div>
+              </div>
+              <svg class="chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="4,6 8,10 12,6"/>
+              </svg>
+            </button>
+            <div class="card-summary">
+              <p>${escHtml(item.summary)}</p>
+            </div>
+          </div>
+        `).join("")}
+      </section>`;
+  }
+
+  html += `<div class="footer">由 Gemini AI 彙整 · 資訊僅供參考，請以原始新聞來源為準</div>`;
+  main.innerHTML = html;
+}
+
+function renderError(msg) {
+  document.getElementById("main").innerHTML = `
+    <div class="state-box">
+      <div style="font-size:32px">⚠️</div>
+      <div style="color:var(--text-secondary);max-width:260px">${msg}</div>
+    </div>`;
+}
+
+function escHtml(str) {
+  return String(str || "")
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+// ── 取得資料 ──────────────────────────────────────
+async function loadDigest() {
+  try {
+    const res = await fetch(`${API_BASE}/digest`);
+    if (res.status === 404) {
+      renderError("今日彙整尚未產生。<br>請先呼叫 <code>POST /run-digest</code> 觸發彙整。");
+      return;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderDigest(data);
+  } catch (e) {
+    renderError(`無法連線到新聞服務。<br><small>${e.message}</small>`);
+  }
+}
+
+loadDigest();
+</script>
+</body>
+</html>
