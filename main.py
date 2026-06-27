@@ -3,18 +3,22 @@
 部署於 Render，使用 Gemini API（含 Google Search grounding）搜尋並彙整當日新聞。
 
 環境變數：
-    GEMINI_API_KEY  - 必填，Gemini API 金鑰
+    GEMINI_API_KEY              - 必填，Gemini API 金鑰
+    LINE_CHANNEL_ACCESS_TOKEN   - 必填，LINE Messaging API Channel Access Token
+    LINE_USER_ID                - 必填，推播目標的 LINE User ID
 
 端點：
     GET  /              健康檢查
     GET  /digest        取得最新快取彙整結果（前端用）
-    POST /run-digest    觸發彙整並更新快取（定時排程 or 手動呼叫）
-    GET  /test-digest   指定單一分類測試，不更新快取
+    POST /run-digest    觸發彙整、更新快取、推播 LINE（Render Cron Job 呼叫）
+    GET  /test-digest   單一分類快速測試，不更新快取、不推播
 """
 
 import os
 import json
 import logging
+import urllib.request
+import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -29,7 +33,6 @@ logger = logging.getLogger("news-digest")
 
 app = FastAPI(title="News Digest API")
 
-# 允許前端跨域存取
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,20 +40,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_KEY = os.environ.get("GEMINI_API_KEY")
-MODEL_NAME = "gemini-2.5-flash"
+API_KEY        = os.environ.get("GEMINI_API_KEY")
+LINE_TOKEN     = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_USER_ID   = os.environ.get("LINE_USER_ID")
+FRONTEND_URL   = "https://stantyhung-lang.github.io/NewsSummary/"
+MODEL_NAME     = "gemini-2.5-flash"
 
-# 記憶體快取，存放最新一次彙整結果
 _cache: dict = {
     "generated_at": None,
     "categories": {},
 }
 
 CATEGORIES = {
-    "world": "今天全球發生的重大國際新聞（政治、經濟、社會、災難等級事件，非地緣政治、非科技類別），列出 3-5 則",
-    "geo":   "今天的地緣政治新聞（國家間軍事、外交、戰爭、貿易制裁、領土爭議等），列出 3-5 則",
-    "tech":  "今天全球重大科技新聞（AI、半導體、大型科技公司、重要產品發布），列出 3-5 則，優先引用 BBC、Reuters、The Verge、TechCrunch、Wired、Bloomberg 等英文主流媒體",
-    "taiwan":"今天台灣本地的重大新聞（政治、經濟、社會、產業、天氣災害、兩岸關係等），列出 8-12 則，涵蓋面向盡量廣泛",
+    "world":  "今天全球發生的重大國際新聞（政治、經濟、社會、災難等級事件，非地緣政治、非科技類別），列出 3-5 則",
+    "geo":    "今天的地緣政治新聞（國家間軍事、外交、戰爭、貿易制裁、領土爭議等），列出 3-5 則",
+    "tech":   "今天全球重大科技新聞（AI、半導體、大型科技公司、重要產品發布），列出 3-5 則，優先引用 BBC、Reuters、The Verge、TechCrunch、Wired、Bloomberg 等英文主流媒體",
+    "taiwan": "今天台灣本地的重大新聞（政治、經濟、社會、產業、天氣災害、兩岸關係等），列出 8-12 則，涵蓋面向盡量廣泛",
 }
 
 CATEGORY_LABELS = {
@@ -58,6 +63,13 @@ CATEGORY_LABELS = {
     "geo":    "地緣政治",
     "tech":   "科技",
     "taiwan": "台灣",
+}
+
+CATEGORY_EMOJI = {
+    "world":  "🌐",
+    "geo":    "🗺️",
+    "tech":   "💻",
+    "taiwan": "🇹🇼",
 }
 
 SYSTEM_PROMPT = """你是一個專業的新聞編輯助手，負責彙整當天的重大新聞。
@@ -99,14 +111,72 @@ def normalize_time(time_str: str) -> str:
     return tw_now().strftime("%H:%M")
 
 
-def get_client() -> genai.Client:
+def get_gemini_client() -> genai.Client:
     if not API_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="伺服器未設定 GEMINI_API_KEY 環境變數，請在 Render 的 Environment 設定中加入。",
-        )
+        raise HTTPException(status_code=500, detail="未設定 GEMINI_API_KEY")
     return genai.Client(api_key=API_KEY)
 
+
+# ── LINE 推播 ────────────────────────────────────────
+
+def build_line_message(digest: dict) -> str:
+    """將彙整結果組成 LINE 推播文字，每類取前兩則標題"""
+    now = tw_now()
+    date_str = f"{now.month}月{now.day}日"
+    weekdays = ["週日","週一","週二","週三","週四","週五","週六"]
+    lines = [
+        f"📰 {date_str} {weekdays[now.weekday()]} 晚間新聞彙整",
+        "─────────────────",
+    ]
+
+    cats = digest.get("categories", {})
+    for key in ["world", "geo", "tech", "taiwan"]:
+        cat_data = cats.get(key, {})
+        items = cat_data.get("items", [])
+        if not items:
+            continue
+        emoji = CATEGORY_EMOJI[key]
+        label = CATEGORY_LABELS[key]
+        lines.append(f"\n{emoji} {label}")
+        for item in items[:2]:          # 每類取前兩則
+            lines.append(f"・{item['title']}")
+
+    lines.append("\n─────────────────")
+    lines.append(f"📖 看完整新聞\n{FRONTEND_URL}")
+    return "\n".join(lines)
+
+
+def push_line_message(text: str) -> bool:
+    """用 Messaging API push message 給指定 User ID，成功回傳 True"""
+    if not LINE_TOKEN or not LINE_USER_ID:
+        logger.warning("未設定 LINE_CHANNEL_ACCESS_TOKEN 或 LINE_USER_ID，跳過推播")
+        return False
+
+    payload = json.dumps({
+        "to": LINE_USER_ID,
+        "messages": [{"type": "text", "text": text}],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.line.me/v2/bot/message/push",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LINE_TOKEN}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            logger.info(f"LINE 推播成功，狀態碼：{res.status}")
+            return True
+    except Exception as e:
+        logger.error(f"LINE 推播失敗：{e}")
+        return False
+
+
+# ── 新聞彙整核心 ─────────────────────────────────────
 
 def fetch_category_news(client: genai.Client, category_key: str, category_desc: str) -> dict:
     today_str = tw_now().strftime("%Y年%m月%d日")
@@ -143,8 +213,8 @@ def fetch_category_news(client: genai.Client, category_key: str, category_desc: 
 
 
 def run_full_digest() -> dict:
-    """跑完四個分類，回傳結果並更新快取"""
-    client = get_client()
+    """跑完四個分類，更新快取，回傳結果"""
+    client = get_gemini_client()
     result = {}
     for key, desc in CATEGORIES.items():
         logger.info(f"彙整分類：{key}")
@@ -160,7 +230,7 @@ def run_full_digest() -> dict:
     return {"generated_at": generated_at, "categories": result}
 
 
-# ── 端點 ────────────────────────────────────────────
+# ── 端點 ─────────────────────────────────────────────
 
 @app.get("/")
 def health_check():
@@ -173,33 +243,36 @@ def health_check():
 
 @app.get("/digest")
 def get_digest():
-    """前端呼叫：取得快取的彙整結果。若尚未產生快取，回傳 404。"""
     if not _cache["generated_at"]:
         raise HTTPException(
             status_code=404,
-            detail="尚無彙整資料，請先呼叫 POST /run-digest 產生第一筆資料。",
+            detail="尚無彙整資料，請先呼叫 POST /run-digest",
         )
     return JSONResponse(content=_cache)
 
 
 @app.post("/run-digest")
 def trigger_digest():
-    """觸發完整彙整並更新快取。Render Cron Job 或手動 POST 呼叫。"""
+    """Render Cron Job 每天定時呼叫此端點：彙整新聞 → 更新快取 → 推播 LINE"""
     logger.info("開始執行完整新聞彙整...")
-    result = run_full_digest()
-    logger.info("彙整完成")
-    return JSONResponse(content=result)
+    digest = run_full_digest()
+    logger.info("彙整完成，準備推播 LINE")
+
+    message = build_line_message(digest)
+    push_line_message(message)
+
+    return JSONResponse(content=digest)
 
 
 @app.get("/test-digest")
 def test_digest(category: Optional[str] = None):
-    """單一分類快速測試，不更新快取。"""
+    """單一分類快速測試，不更新快取、不推播 LINE"""
     if category and category not in CATEGORIES:
         raise HTTPException(
             status_code=400,
             detail=f"未知分類 '{category}'，可用分類：{list(CATEGORIES.keys())}",
         )
-    client = get_client()
+    client = get_gemini_client()
     targets = {category: CATEGORIES[category]} if category else CATEGORIES
     result = {}
     for key, desc in targets.items():
@@ -208,6 +281,16 @@ def test_digest(category: Optional[str] = None):
         except Exception as e:
             result[key] = {"items": [], "label": CATEGORY_LABELS[key], "error": str(e)}
     return JSONResponse(content={"generated_at": tw_now().isoformat(), "categories": result})
+
+
+@app.post("/test-line")
+def test_line_push():
+    """測試 LINE 推播是否正常，用假訊息打通連線"""
+    test_msg = "✅ LINE 推播測試成功！\n新聞彙整小幫手已就緒。"
+    ok = push_line_message(test_msg)
+    if ok:
+        return {"status": "success", "message": "LINE 推播成功"}
+    raise HTTPException(status_code=500, detail="LINE 推播失敗，請確認環境變數設定")
 
 
 if __name__ == "__main__":
