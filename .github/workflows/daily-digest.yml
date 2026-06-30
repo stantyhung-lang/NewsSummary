@@ -9,28 +9,37 @@ jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: 等待服務完全就緒（最多等 3 分鐘）
-        run: |
-          echo "開始確認服務狀態..."
-          READY=false
-          for i in $(seq 1 18); do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 https://newssummary-3l9x.onrender.com/ || echo "000")
-            echo "第 $i 次確認：HTTP $STATUS"
-            if [ "$STATUS" = "200" ]; then
-              echo "服務已就緒，等待額外 10 秒讓服務穩定..."
-              sleep 10
-              READY=true
-              break
-            fi
-            echo "服務尚未就緒，10 秒後重試..."
-            sleep 10
-          done
-          if [ "$READY" = "false" ]; then
-            echo "警告：3 分鐘內服務未就緒，仍嘗試繼續執行下一步"
-          fi
+      - name: 喚醒服務（觸發冷啟動）
+        run: curl -s --max-time 30 https://newssummary-3l9x.onrender.com/ || true
 
-      - name: 觸發新聞彙整與LINE推播
+      - name: 等待應用程式完全初始化
+        run: sleep 30
+
+      - name: 觸發新聞彙整與LINE推播（失敗自動重試最多5次）
         run: |
-          curl -X POST https://newssummary-3l9x.onrender.com/run-digest \
-            --max-time 600 \
-            -w "\nHTTP狀態碼: %{http_code}\n耗時: %{time_total}秒\n"
+          MAX_RETRY=5
+          for i in $(seq 1 $MAX_RETRY); do
+            echo "===== 第 $i 次嘗試 ====="
+            HTTP_CODE=$(curl -s -o response.txt -w "%{http_code}" \
+              -X POST https://newssummary-3l9x.onrender.com/run-digest \
+              --max-time 600)
+            echo "HTTP 狀態碼: $HTTP_CODE"
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "成功！"
+              cat response.txt
+              exit 0
+            fi
+
+            echo "失敗內容："
+            cat response.txt
+            echo ""
+
+            if [ "$i" -lt "$MAX_RETRY" ]; then
+              echo "20 秒後重試..."
+              sleep 20
+            fi
+          done
+
+          echo "已達最大重試次數，仍然失敗"
+          exit 1
