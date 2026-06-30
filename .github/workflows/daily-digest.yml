@@ -3,28 +3,25 @@ name: Daily News Digest
 on:
   schedule:
     - cron: '0 12 * * *'  # UTC 12:00 = 台灣時間 20:00
-  workflow_dispatch:        # 允許手動觸發，方便測試
+  workflow_dispatch:
 
 jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: 喚醒服務（第一次）
-        run: curl -s https://newssummary-3l9x.onrender.com/ || true
-
-      - name: 等待服務完全啟動
-        run: sleep 60
-
-      - name: 確認服務已就緒
+      - name: 等待服務完全就緒（最多等 3 分鐘）
         run: |
-          for i in 1 2 3; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://newssummary-3l9x.onrender.com/)
-            echo "嘗試 $i：HTTP $STATUS"
+          echo "開始確認服務狀態..."
+          for i in $(seq 1 18); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://newssummary-3l9x.onrender.com/)
+            echo "第 $i 次確認：HTTP $STATUS"
             if [ "$STATUS" = "200" ]; then
-              echo "服務就緒"
+              echo "服務已就緒，等待額外 10 秒讓服務穩定..."
+              sleep 10
               break
             fi
-            sleep 15
+            echo "服務尚未就緒，10 秒後重試..."
+            sleep 10
           done
 
       - name: 觸發新聞彙整與LINE推播
