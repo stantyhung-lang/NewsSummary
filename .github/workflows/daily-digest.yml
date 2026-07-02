@@ -1,9 +1,7 @@
 name: Daily News Digest
 
 on:
-  schedule:
-    - cron: '0 12 * * *'  # UTC 12:00 = 台灣時間 20:00
-  workflow_dispatch:
+  workflow_dispatch:  # 僅保留手動觸發，排程改由 cron-job.org 負責
 
 jobs:
   trigger:
